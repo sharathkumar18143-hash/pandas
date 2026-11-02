@@ -1,11 +1,16 @@
 cimport cython
 from datetime import (
-    timedelta,
     timezone,
 )
 import pickle
 import zoneinfo
-from zoneinfo._zoneinfo import ZoneInfo as _ZoneInfo
+try:
+    from zoneinfo._zoneinfo import ZoneInfo as _ZoneInfo
+except ImportError as err:
+    raise ImportError(
+        "pandas requires the pure-python zoneinfo implementation "
+        "(zoneinfo._zoneinfo), which is unavailable in this Python build."
+    ) from err
 
 from pandas.compat._optional import import_optional_dependency
 
@@ -147,7 +152,7 @@ cpdef inline tzinfo maybe_get_tz(object tz):
             # On Python 3 on Windows, the filename is not always set correctly.
             if isinstance(tz, _dateutil_tzfile) and ".tar.gz" in tz._filename:
                 tz._filename = zone
-        elif tz[0] in {"-", "+"}:
+        elif tz and tz[0] in {"-", "+"}:
             hours = int(tz[0:3])
             minutes = int(tz[0] + tz[4:6])
             tz = timezone(timedelta(hours=hours, minutes=minutes))
@@ -218,6 +223,9 @@ cdef object tz_cache_key(tzinfo tz):
                              "https://github.com/pandas-dev/pandas/pull/7362")
         return "dateutil" + tz._filename
     elif is_zoneinfo(tz):
+        if tz.key is None:
+            # ZoneInfo.from_file: no reliable key to cache on
+            return None
         return "zoneinfo/" + tz.key
     else:
         return None
@@ -354,7 +362,7 @@ cdef tuple _get_zoneinfo_trans_and_deltas(tzinfo tz):
         Nanosecond UTC offsets corresponding to DST transitions.
     is_fixed : bint
         True if this is a fixed-offset timezone with no transitions.
-    has_tz_tule : bint
+    has_tz_rule : bint
         Bool indicating if the tz has a "rule" attached describing transitions
         after the array of trans/deltas.
     """
@@ -475,8 +483,11 @@ cdef object get_dst_info(tzinfo tz):
         Bool indicating if the tz has a "rule" attached describing transitions
         after the array of transitions/deltas (only used for ZoneInfo).
     """
-    cache_key = tz_cache_key(tz)
-    if cache_key is None:
+            if is_zoneinfo(tz):
+            raise ValueError(
+                "ZoneInfo objects created with ZoneInfo.from_file are not "
+                "supported for DST transition lookups; use ZoneInfo(key)."
+            )
         # e.g. pytz.FixedOffset, matplotlib.dates._UTC,
         # psycopg2.tz.FixedOffsetTimezone
         num = int(get_utcoffset(tz, None).total_seconds()) * 1_000_000_000
@@ -581,7 +592,7 @@ cpdef bint tz_compare(tzinfo start, tzinfo end):
     start : tzinfo
     end : tzinfo
 
-    Returns:
+    Returns
     -------
     bool
     """
